@@ -104,7 +104,15 @@ class TrafficAnalyzer:
 
     def _open_capture(self, camera_key: str):
         cam = config.CAMERAS[camera_key]
-        cap = cv2.VideoCapture(str(cam["path"]))
+        source = config.camera_source(cam)
+        if not source:
+            cap = cv2.VideoCapture("__smartvia_no_source__")
+        else:
+            target = config.capture_target(source)
+            if isinstance(target, int):
+                cap = cv2.VideoCapture(target, cv2.CAP_DSHOW)
+            else:
+                cap = cv2.VideoCapture(target)
         with self.state.lock:
             self.state.camera_key = cam["key"]
             self.state.camera_id = cam["camera_id"]
@@ -117,6 +125,12 @@ class TrafficAnalyzer:
             pass
         return cap, cam
 
+    def _fail_open(self, cam: dict) -> None:
+        msg = config.open_failure_message(cam)
+        self._set_error(msg)
+        placeholder = self._placeholder_frame(msg)
+        self._publish_frame(placeholder, 0, 0, False, clear_error=False)
+
     def _run(self) -> None:
         cap = None
         camera_key = self._current_request()
@@ -124,13 +138,7 @@ class TrafficAnalyzer:
             self._model = YOLO(config.YOLO_MODEL)
             cap, cam = self._open_capture(camera_key)
             if not cap.isOpened():
-                msg = (
-                    f"No se pudo abrir {cam['path'].name}. "
-                    f"Coloca el vídeo de {cam['label']} en la raíz del proyecto."
-                )
-                self._set_error(msg)
-                placeholder = self._placeholder_frame(msg)
-                self._publish_frame(placeholder, 0, 0, False, clear_error=False)
+                self._fail_open(cam)
 
             while not self._stop.is_set():
                 requested = self._current_request()
@@ -140,27 +148,27 @@ class TrafficAnalyzer:
                     camera_key = requested
                     cap, cam = self._open_capture(camera_key)
                     if not cap.isOpened():
-                        msg = (
-                            f"No se pudo abrir {cam['path'].name}. "
-                            f"Coloca el vídeo de {cam['label']} en la raíz."
-                        )
-                        self._set_error(msg)
-                        placeholder = self._placeholder_frame(msg)
-                        self._publish_frame(placeholder, 0, 0, False, clear_error=False)
+                        self._fail_open(cam)
                         time.sleep(0.4)
                         continue
 
-                for _ in range(config.FRAME_SKIP):
+                skip = config.LIVE_FRAME_SKIP if cam.get("live") else config.FRAME_SKIP
+                for _ in range(skip):
                     cap.grab()
                 ok, frame = cap.read()
                 if not ok:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self._tracks.clear()
                     try:
                         if self._model.predictor and self._model.predictor.trackers:
                             self._model.predictor.trackers[0].reset()
                     except Exception:
                         pass
+                    if cam.get("live"):
+                        cap.release()
+                        time.sleep(0.5)
+                        cap, cam = self._open_capture(camera_key)
+                        continue
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
 
                 h, w = frame.shape[:2]
@@ -189,6 +197,7 @@ class TrafficAnalyzer:
             classes=config.VEHICLE_CLASS_IDS,
             tracker="bytetrack.yaml",
             imgsz=config.INFER_IMGSZ,
+            conf=config.CONFIDENCE,
         )
         result = results[0]
         annotated = frame.copy()
@@ -337,14 +346,30 @@ class TrafficAnalyzer:
 
     def _placeholder_frame(self, message: str) -> np.ndarray:
         frame = np.zeros((480, 854, 3), dtype=np.uint8)
-        cv2.putText(
-            frame,
-            message[:80],
-            (20, 240),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (200, 200, 200),
-            1,
-            cv2.LINE_AA,
-        )
+        words = message.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            trial = f"{current} {word}".strip()
+            if len(trial) > 70:
+                if current:
+                    lines.append(current)
+                current = word
+            else:
+                current = trial
+        if current:
+            lines.append(current)
+        y = 200
+        for line in lines[:6]:
+            cv2.putText(
+                frame,
+                line,
+                (24, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (200, 200, 200),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 32
         return frame

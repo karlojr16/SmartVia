@@ -1,12 +1,11 @@
 """Servidor FastAPI de SmartVia (visión).
 
-Coloca `trafico.mp4` en la raíz. El panel PECUU (Next.js) debe estar en :3000
-para recibir las alertas de embotellamiento:
+Coloca `trafico.mp4` / `trafico2.mp4` en la raíz. Cámara 3 (teléfono):
 
-    npm install
-    npm run dev
-
+    $env:PHONE_STREAM_URL="http://IP-DEL-TELEFONO:8080/video"
     uvicorn main:app --host 127.0.0.1 --port 8000
+
+El panel PECUU (Next.js) debe estar en :3000 para las alertas.
 """
 
 from __future__ import annotations
