@@ -1,11 +1,20 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+
+type ToastAlert = {
+  camera_id: string;
+  vehicle_count: number;
+  stationary_count?: number;
+};
 
 export default function Dashboard() {
   const [alerts, setAlerts] = useState<any[]>([]);
   const [activeAlertIndex, setActiveAlertIndex] = useState<number | null>(null);
   const [lastSync, setLastSync] = useState<string>('');
+  const [toast, setToast] = useState<ToastAlert | null>(null);
+  const primedAlerts = useRef(false);
+  const lastAlertKey = useRef<string>('');
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -19,6 +28,23 @@ export default function Dashboard() {
 
           if (activeAlertIndex === null && list.length > 0) {
             setActiveAlertIndex(0);
+          }
+
+          if (list.length > 0) {
+            const newest = list[0];
+            const key = `${newest.timestamp}|${newest.camera_id}|${newest.vehicle_count}`;
+            if (!primedAlerts.current) {
+              primedAlerts.current = true;
+              lastAlertKey.current = key;
+            } else if (key !== lastAlertKey.current) {
+              lastAlertKey.current = key;
+              setActiveAlertIndex(0);
+              setToast({
+                camera_id: newest.camera_id || 'Cámara desconocida',
+                vehicle_count: newest.vehicle_count ?? 0,
+                stationary_count: newest.stationary_count,
+              });
+            }
           }
         }
       } catch (error) {
@@ -34,11 +60,16 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [activeAlertIndex]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const hide = setTimeout(() => setToast(null), 5500);
+    return () => clearTimeout(hide);
+  }, [toast]);
+
   const activeAlert = activeAlertIndex !== null ? alerts[activeAlertIndex] : null;
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0a0a0a] text-gray-300 font-sans overflow-hidden">
-      
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-[#0a0a0a] font-sans text-gray-300">
       {/* HEADER */}
       <header className="h-14 border-b border-gray-800 bg-[#111] flex items-center justify-between px-4 shrink-0">
         <div className="flex items-center gap-3">
@@ -207,6 +238,22 @@ export default function Dashboard() {
         </aside>
 
       </div>
+      {toast && (
+        <div
+          role="status"
+          className="pointer-events-none fixed left-1/2 top-5 z-[100] w-[min(92vw,26rem)] -translate-x-1/2"
+        >
+          <div className="alert-toast rounded-lg border border-red-500/60 bg-[#1a0a0a]/95 px-4 py-3 shadow-[0_8px_32px_rgba(220,38,38,0.35)] backdrop-blur-sm">
+            <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-red-400">Nueva alerta</p>
+            <p className="mt-1 truncate text-sm font-semibold text-white">{toast.camera_id}</p>
+            <p className="mt-0.5 font-mono text-xs text-gray-400">
+              {toast.vehicle_count} veh.
+              {toast.stationary_count != null ? ` · ${toast.stationary_count} detenidos` : ''}
+              {' · posible congestionamiento'}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
