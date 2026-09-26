@@ -9,13 +9,21 @@
   <body class="min-h-screen overflow-x-hidden bg-slate-950 text-slate-100">
     <header class="border-b border-slate-800 px-5 py-2.5">
       <h1 class="text-lg font-semibold tracking-tight">SmartVia</h1>
-      <p class="text-xs text-slate-400">Análisis de tráfico en tiempo real · {{ video_name }}</p>
+      <p class="text-xs text-slate-400">Análisis de tráfico en tiempo real</p>
     </header>
 
     <main class="flex flex-wrap items-start gap-4 p-4">
       <section class="w-fit max-w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-3 py-2 text-xs font-medium text-slate-300">
-          Stream procesado (bbox, ID, MOVING / STATIONARY)
+        <div class="flex items-center gap-1 border-b border-slate-800 px-2 pt-2">
+          {% for cam in cameras %}
+          <button
+            type="button"
+            data-camera="{{ cam.key }}"
+            class="camera-tab rounded-t-md px-4 py-1.5 text-xs font-medium {% if cam.key == active_camera %}bg-slate-800 text-white{% else %}text-slate-400 hover:text-slate-200{% endif %}"
+          >
+            {{ cam.label }}
+          </button>
+          {% endfor %}
         </div>
         <div class="bg-black p-2">
           <img
@@ -33,6 +41,10 @@
         </div>
 
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-400">Cámara</span>
+            <span id="camera-label" class="font-mono text-xs">Cámara 1</span>
+          </div>
           <div class="flex justify-between text-sm">
             <span class="text-slate-400">Vehículos</span>
             <span id="vehicle-count" class="font-mono">0</span>
@@ -58,6 +70,36 @@
       const stationary = document.getElementById("stationary-count");
       const lastAlert = document.getElementById("last-alert");
       const errorBox = document.getElementById("error-box");
+      const cameraLabel = document.getElementById("camera-label");
+      const tabs = document.querySelectorAll(".camera-tab");
+      const stream = document.querySelector("img[alt='Video procesado SmartVia']");
+      const activeTabClass = "camera-tab rounded-t-md px-4 py-1.5 text-xs font-medium bg-slate-800 text-white";
+      const idleTabClass = "camera-tab rounded-t-md px-4 py-1.5 text-xs font-medium text-slate-400 hover:text-slate-200";
+
+      function paintTabs(activeKey) {
+        tabs.forEach((tab) => {
+          tab.className = tab.dataset.camera === activeKey ? activeTabClass : idleTabClass;
+        });
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", async () => {
+          const camera = tab.dataset.camera;
+          paintTabs(camera);
+          try {
+            await fetch("/api/camera", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ camera }),
+            });
+            if (stream) stream.src = "/video?t=" + Date.now();
+            refreshStatus();
+          } catch (err) {
+            errorBox.textContent = "No se pudo cambiar de cámara";
+            errorBox.classList.remove("hidden");
+          }
+        });
+      });
 
       async function refreshStatus() {
         try {
@@ -66,6 +108,8 @@
           vehicles.textContent = data.vehicle_count;
           stationary.textContent = data.stationary_count;
           lastAlert.textContent = data.last_alert_at || "—";
+          if (cameraLabel && data.camera_label) cameraLabel.textContent = data.camera_label;
+          if (data.camera_key) paintTabs(data.camera_key);
           if (data.jam) {
             label.textContent = "Embotellamiento Detectado";
             label.className = "mt-2 text-2xl font-semibold text-red-400";

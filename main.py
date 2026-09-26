@@ -15,15 +15,20 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 import config
 from tracker import TrafficAnalyzer
 
 analyzer = TrafficAnalyzer()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+
+class CameraSelect(BaseModel):
+    camera: str
 
 
 @asynccontextmanager
@@ -41,8 +46,23 @@ async def index(request: Request):
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"video_name": config.VIDEO_PATH.name},
+        {
+            "cameras": [
+                {"key": key, "label": cam["label"]}
+                for key, cam in config.CAMERAS.items()
+            ],
+            "active_camera": config.DEFAULT_CAMERA,
+        },
     )
+
+
+@app.post("/api/camera")
+async def select_camera(body: CameraSelect):
+    try:
+        analyzer.set_camera(body.camera)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return analyzer.snapshot_status()
 
 
 @app.get("/api/status")

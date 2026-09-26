@@ -38,6 +38,9 @@ class SharedState:
     stationary_count: int = 0
     last_alert_at: str | None = None
     error: str | None = None
+    camera_key: str = "cam1"
+    camera_id: str = ""
+    camera_label: str = "Cámara 1"
 
 
 class TrafficAnalyzer:
@@ -46,8 +49,14 @@ class TrafficAnalyzer:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tracks: dict[int, TrackMemory] = {}
-        self._last_alert_ts: float = 0.0
+        self._last_alert_ts: dict[str, float] = {}
         self._model: YOLO | None = None
+        self._requested_camera = config.DEFAULT_CAMERA
+        self._camera_lock = threading.Lock()
+        cam = config.CAMERAS[config.DEFAULT_CAMERA]
+        self.state.camera_key = cam["key"]
+        self.state.camera_id = cam["camera_id"]
+        self.state.camera_label = cam["label"]
         placeholder = self._placeholder_frame("Cargando modelo YOLOv8...")
         ok, buf = cv2.imencode(".jpg", placeholder)
         if ok:
@@ -73,30 +82,74 @@ class TrafficAnalyzer:
                 "stationary_count": self.state.stationary_count,
                 "last_alert_at": self.state.last_alert_at,
                 "error": self.state.error,
+                "camera_key": self.state.camera_key,
+                "camera_id": self.state.camera_id,
+                "camera_label": self.state.camera_label,
             }
 
     def latest_jpeg(self) -> bytes:
         with self.state.lock:
             return self.state.jpeg
 
+    def set_camera(self, camera_key: str) -> dict[str, Any]:
+        if camera_key not in config.CAMERAS:
+            raise ValueError(f"Cámara desconocida: {camera_key}")
+        with self._camera_lock:
+            self._requested_camera = camera_key
+        return {"ok": True, "camera_key": camera_key}
+
+    def _current_request(self) -> str:
+        with self._camera_lock:
+            return self._requested_camera
+
+    def _open_capture(self, camera_key: str):
+        cam = config.CAMERAS[camera_key]
+        cap = cv2.VideoCapture(str(cam["path"]))
+        with self.state.lock:
+            self.state.camera_key = cam["key"]
+            self.state.camera_id = cam["camera_id"]
+            self.state.camera_label = cam["label"]
+        self._tracks.clear()
+        try:
+            if self._model and self._model.predictor and self._model.predictor.trackers:
+                self._model.predictor.trackers[0].reset()
+        except Exception:
+            pass
+        return cap, cam
+
     def _run(self) -> None:
         cap = None
+        camera_key = self._current_request()
         try:
             self._model = YOLO(config.YOLO_MODEL)
-            cap = cv2.VideoCapture(str(config.VIDEO_PATH))
+            cap, cam = self._open_capture(camera_key)
             if not cap.isOpened():
                 msg = (
-                    f"No se pudo abrir {config.VIDEO_PATH.name}. "
-                    "Coloca trafico.mp4 en la raíz del proyecto."
+                    f"No se pudo abrir {cam['path'].name}. "
+                    f"Coloca el vídeo de {cam['label']} en la raíz del proyecto."
                 )
                 self._set_error(msg)
                 placeholder = self._placeholder_frame(msg)
                 self._publish_frame(placeholder, 0, 0, False, clear_error=False)
-                while not self._stop.is_set():
-                    time.sleep(0.5)
-                return
 
             while not self._stop.is_set():
+                requested = self._current_request()
+                if requested != camera_key or cap is None or not cap.isOpened():
+                    if cap is not None:
+                        cap.release()
+                    camera_key = requested
+                    cap, cam = self._open_capture(camera_key)
+                    if not cap.isOpened():
+                        msg = (
+                            f"No se pudo abrir {cam['path'].name}. "
+                            f"Coloca el vídeo de {cam['label']} en la raíz."
+                        )
+                        self._set_error(msg)
+                        placeholder = self._placeholder_frame(msg)
+                        self._publish_frame(placeholder, 0, 0, False, clear_error=False)
+                        time.sleep(0.4)
+                        continue
+
                 for _ in range(config.FRAME_SKIP):
                     cap.grab()
                 ok, frame = cap.read()
@@ -116,7 +169,7 @@ class TrafficAnalyzer:
                     frame = cv2.resize(frame, (config.MAX_FRAME_WIDTH, int(h * scale)))
 
                 annotated, vehicles, stationary, jam = self._process_frame(frame)
-                self._maybe_alert(jam, vehicles, stationary)
+                self._maybe_alert(jam, vehicles, stationary, cam["camera_id"])
                 self._publish_frame(annotated, vehicles, stationary, jam)
         except Exception as exc:  # noqa: BLE001 — el hilo no debe morir en silencio
             self._set_error(str(exc))
@@ -177,22 +230,25 @@ class TrafficAnalyzer:
         self._draw_overlay(annotated, vehicle_count, stationary_count, jam)
         return annotated, vehicle_count, stationary_count, jam
 
-    def _maybe_alert(self, jam: bool, vehicle_count: int, stationary_count: int) -> None:
+    def _maybe_alert(
+        self, jam: bool, vehicle_count: int, stationary_count: int, camera_id: str
+    ) -> None:
         if not jam:
             return
         now = time.monotonic()
-        if now - self._last_alert_ts < config.ALERT_COOLDOWN_SECONDS:
+        last = self._last_alert_ts.get(camera_id, 0.0)
+        if now - last < config.ALERT_COOLDOWN_SECONDS:
             return
-        self._last_alert_ts = now
+        self._last_alert_ts[camera_id] = now
         detected_at = datetime.now(timezone.utc).isoformat()
         send_jam_alert(
             {
-                "title": "SmartVia: embotellamiento detectado",
+                "title": f"SmartVia: embotellamiento en {camera_id}",
                 "body": (
                     f"{stationary_count} vehículos estacionarios "
                     f"(total {vehicle_count}). Posible choque o congestionamiento."
                 ),
-                "camera_id": config.CAMERA_ID,
+                "camera_id": camera_id,
                 "vehicle_count": vehicle_count,
                 "stationary_count": stationary_count,
                 "detected_at": detected_at,
@@ -265,7 +321,8 @@ class TrafficAnalyzer:
     def _draw_overlay(self, frame: np.ndarray, vehicles: int, stationary: int, jam: bool) -> None:
         _h, w = frame.shape[:2]
         status = "EMBOTELLAMIENTO" if jam else "TRAFICO FLUIDO"
-        text = f"{status} | vehiculos={vehicles} estacionarios={stationary}"
+        cam_label = self.state.camera_label
+        text = f"{cam_label} | {status} | veh={vehicles} stop={stationary}"
         cv2.rectangle(frame, (0, 0), (w, 36), COLOR_OVERLAY, -1)
         cv2.putText(
             frame,
