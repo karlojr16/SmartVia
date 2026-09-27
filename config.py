@@ -32,6 +32,13 @@ CAMERAS = {
         "camera_id": "Cámara 3 · teléfono",
         "live": True,
     },
+    "cam4": {
+        "key": "cam4",
+        "label": "Cámara 4",
+        "source": str(BASE_DIR / "trafico3.mp4"),
+        "camera_id": "Cámara 4 · trafico3.mp4",
+        "live": False,
+    },
 }
 DEFAULT_CAMERA = "cam1"
 VIDEO_PATH = Path(CAMERAS[DEFAULT_CAMERA]["source"])

@@ -1,6 +1,6 @@
 """Servidor FastAPI de SmartVia (visión).
 
-Coloca `trafico.mp4` / `trafico2.mp4` en la raíz. Cámara 3 (teléfono):
+Coloca `trafico.mp4` / `trafico2.mp4` / `trafico3.mp4` en la raíz. Cámara 3 (teléfono):
 
     $env:PHONE_STREAM_URL="http://IP-DEL-TELEFONO:8080/video"
     uvicorn main:app --host 127.0.0.1 --port 8000
