@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmartVia — Calibrar zonas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen overflow-x-hidden bg-slate-950 text-slate-100">
+    <header class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-5 py-2.5">
+      <div>
+        <h1 class="text-lg font-semibold tracking-tight">Calibrar zona de circulación</h1>
+        <p class="text-xs text-slate-400">
+          Haz clic sobre el video para marcar el carril/calle. Los vehículos fuera del polígono
+          no se cuentan para embotellamiento, sin importar si se movieron o no.
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        {% for cam in cameras %}
+        <a
+          href="/calibrate/{{ cam.key }}"
+          class="rounded-md px-3 py-1.5 text-xs font-medium {% if cam.key == camera_key %}bg-slate-800 text-white{% else %}text-slate-400 hover:text-slate-200{% endif %}"
+        >{{ cam.label }}</a>
+        {% endfor %}
+        <a href="/" class="ml-2 rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+          ← Volver al panel
+        </a>
+      </div>
+    </header>
+
+    <main class="flex flex-wrap items-start gap-4 p-4">
+      <section class="w-fit max-w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-2">
+        <canvas id="canvas" class="block max-w-full cursor-crosshair rounded-lg bg-black"></canvas>
+        <p class="mt-2 text-xs text-slate-400">
+          Clic izquierdo: agregar vértice · Clic derecho / doble clic: cerrar polígono actual
+        </p>
+      </section>
+
+      <aside class="w-full max-w-sm space-y-4">
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+          <p class="text-xs uppercase tracking-wider text-slate-400">Polígono en curso</p>
+          <label class="block text-sm">
+            <span class="text-slate-400">Nombre de la zona</span>
+            <input id="zone-name" type="text" placeholder="carril_norte"
+              class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm outline-none focus:border-emerald-600" />
+          </label>
+          <div class="flex flex-wrap gap-2">
+            <button id="btn-close" class="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium hover:bg-emerald-600">
+              Cerrar polígono
+            </button>
+            <button id="btn-undo" class="rounded-md border border-slate-700 px-3 py-1.5 text-xs hover:bg-slate-800">
+              Deshacer punto
+            </button>
+            <button id="btn-clear" class="rounded-md border border-red-800 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40">
+              Borrar en curso
+            </button>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+          <p class="text-xs uppercase tracking-wider text-slate-400">Zonas guardadas</p>
+          <ul id="zone-list" class="space-y-1 text-sm"></ul>
+          <p id="zone-empty" class="text-xs text-slate-500">Sin zonas todavía.</p>
+
+          <label class="block text-sm pt-2">
+            <span class="text-slate-400">Buffer de tolerancia (% de la diagonal del frame)</span>
+            <input id="buffer-percent" type="number" min="0" max="20" step="0.5" value="1.5"
+              class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm outline-none focus:border-emerald-600" />
+          </label>
+
+          <button id="btn-save" class="w-full rounded-md bg-sky-700 px-3 py-2 text-sm font-medium hover:bg-sky-600">
+            Guardar zonas de {{ camera_key }}
+          </button>
+          <p id="save-status" class="text-xs text-slate-400"></p>
+        </div>
+      </aside>
+    </main>
+
+    <script>
+      const cameraKey = {{ camera_key | tojson }};
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+
+      let zones = [];      // [{name, polygon: [[nx, ny], ...]}]  normalizado 0-1
+      let current = [];    // [[px, py], ...]  en píxeles del canvas (resolución del frame)
+
+      const zoneNameInput = document.getElementById("zone-name");
+      const zoneList = document.getElementById("zone-list");
+      const zoneEmpty = document.getElementById("zone-empty");
+      const bufferInput = document.getElementById("buffer-percent");
+      const saveStatus = document.getElementById("save-status");
+
+      function toNorm(pts) {
+        return pts.map(([x, y]) => [x / canvas.width, y / canvas.height]);
+      }
+      function toPixels(pts) {
+        return pts.map(([x, y]) => [x * canvas.width, y * canvas.height]);
+      }
+
+      function redraw() {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Zonas ya guardadas: relleno translúcido + contorno.
+        zones.forEach((zone, i) => {
+          const pts = toPixels(zone.polygon);
+          ctx.beginPath();
+          pts.forEach(([x, y], j) => (j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+          ctx.closePath();
+          ctx.fillStyle = "rgba(0, 200, 255, 0.15)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0, 200, 255, 0.9)";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          const [lx, ly] = pts[0];
+          ctx.fillStyle = "#22d3ee";
+          ctx.font = "12px monospace";
+          ctx.fillText(zone.name, lx + 4, ly - 4);
+        });
+
+        // Polígono en construcción.
+        if (current.length > 0) {
+          ctx.beginPath();
+          current.forEach(([x, y], j) => (j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+          ctx.strokeStyle = "#facc15";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          current.forEach(([x, y]) => {
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = "#facc15";
+            ctx.fill();
+          });
+        }
+      }
+
+      function renderZoneList() {
+        zoneList.innerHTML = "";
+        zoneEmpty.classList.toggle("hidden", zones.length > 0);
+        zones.forEach((zone, i) => {
+          const li = document.createElement("li");
+          li.className = "flex items-center justify-between rounded-md bg-slate-950 px-2 py-1";
+          li.innerHTML = `<span class="font-mono text-xs">${zone.name}</span>`;
+          const del = document.createElement("button");
+          del.textContent = "✕";
+          del.className = "text-red-400 hover:text-red-300 px-2";
+          del.onclick = () => {
+            zones.splice(i, 1);
+            renderZoneList();
+            redraw();
+          };
+          li.appendChild(del);
+          zoneList.appendChild(li);
+        });
+      }
+
+      function canvasPoint(evt) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return [(evt.clientX - rect.left) * scaleX, (evt.clientY - rect.top) * scaleY];
+      }
+
+      canvas.addEventListener("click", (evt) => {
+        current.push(canvasPoint(evt));
+        redraw();
+      });
+
+      canvas.addEventListener("dblclick", (evt) => {
+        evt.preventDefault();
+        closeCurrentPolygon();
+      });
+
+      canvas.addEventListener("contextmenu", (evt) => {
+        evt.preventDefault();
+        closeCurrentPolygon();
+      });
+
+      function closeCurrentPolygon() {
+        if (current.length < 3) {
+          saveStatus.textContent = "Un polígono necesita al menos 3 puntos.";
+          return;
+        }
+        const name = zoneNameInput.value.trim() || `zona_${zones.length + 1}`;
+        zones.push({ name, polygon: toNorm(current) });
+        current = [];
+        zoneNameInput.value = "";
+        saveStatus.textContent = "";
+        renderZoneList();
+        redraw();
+      }
+
+      document.getElementById("btn-close").onclick = closeCurrentPolygon;
+      document.getElementById("btn-undo").onclick = () => {
+        current.pop();
+        redraw();
+      };
+      document.getElementById("btn-clear").onclick = () => {
+        current = [];
+        redraw();
+      };
+
+      document.getElementById("btn-save").onclick = async () => {
+        const payload = {
+          zones,
+          buffer_percent: parseFloat(bufferInput.value) || 0,
+          frame_width: canvas.width,
+          frame_height: canvas.height,
+        };
+        saveStatus.textContent = "Guardando...";
+        try {
+          const res = await fetch(`/api/zones/${cameraKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          saveStatus.textContent = "Zonas guardadas ✓ (se aplican al siguiente frame analizado, sin reiniciar)";
+        } catch (err) {
+          saveStatus.textContent = "Error al guardar: " + err;
+        }
+      };
+
+      async function init() {
+        img.onload = async () => {
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          try {
+            const res = await fetch(`/api/zones/${cameraKey}`);
+            const data = await res.json();
+            zones = (data.zones || []).map((z) => ({ name: z.name, polygon: z.polygon }));
+            bufferInput.value = data.buffer_percent ?? 1.5;
+          } catch (err) {
+            // sin zonas previas, arrancamos vacío
+          }
+          renderZoneList();
+          redraw();
+        };
+        img.src = `/calibrate/${cameraKey}/frame.jpg`;
+      }
+
+      init();
+    </script>
+  </body>
+</html>

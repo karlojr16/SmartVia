@@ -27,6 +27,13 @@ type VisionStatus = {
   camera_key: string;
   camera_id: string;
   camera_label: string;
+  // Origen del embotellamiento (cabeza de fila / cola) — solo lo llenan las
+  // cámaras con filtro de zona de calle habilitado (ver CAMARAS_CON_FILTRO_ZONA
+  // en config.py). Para el resto llegan en null/vacío y la tarjeta no se muestra.
+  queue_head_id?: number | null;
+  queue_members?: number[];
+  queue_length?: number;
+  queue_length_px?: number;
 };
 
 const CAMERAS = [
@@ -34,6 +41,7 @@ const CAMERAS = [
   { key: "cam2", label: "Cámara 2", tag: "trafico2.mp4" },
   { key: "cam3", label: "Cámara 3", tag: "Stream Teléfono" },
   { key: "cam4", label: "Cámara 4", tag: "trafico3.mp4" },
+  { key: "cam5", label: "Cámara 5", tag: "trafico_interseccion.mp4" },
 ];
 
 export default function Dashboard() {
@@ -256,9 +264,20 @@ export default function Dashboard() {
                   Alimentación de Cámaras (SmartVia)
                 </span>
                 <span className="text-[10px] font-mono bg-blue-950/70 border border-blue-700/50 text-blue-300 px-2 py-0.5 rounded">
-                  4 ACTIVAS
+                  {CAMERAS.length} ACTIVAS
                 </span>
               </div>
+
+              {["cam1", "cam2", "cam4", "cam5"].includes(selectedCamera) && (
+                <a
+                  href={`http://localhost:8000/calibrate/${selectedCamera}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-mono bg-fuchsia-950/70 border border-fuchsia-700/50 text-fuchsia-300 px-2 py-1 rounded"
+                >
+                  ✎ Editar polígono {selectedCamera}
+                </a>
+              )}
 
               {/* CAMERA TABS */}
               <div className="flex items-center gap-1 bg-[#161b22] p-1 rounded-lg border border-gray-700/60">
@@ -398,6 +417,41 @@ export default function Dashboard() {
               {visionStatus.error && (
                 <div className="rounded-lg border border-amber-600/50 bg-amber-950/40 p-3 text-xs text-amber-200 font-mono">
                   {visionStatus.error}
+                </div>
+              )}
+
+              {/* QUEUE / HEAD-OF-LINE — solo aparece si la cámara activa tiene
+                  filtro de zona + cola detectada (ver CAMARAS_CON_FILTRO_ZONA) */}
+              {visionStatus.queue_head_id != null && (
+                <div className="rounded-xl border border-fuchsia-700/60 bg-fuchsia-950/25 p-3.5">
+                  <p className="text-[10px] uppercase font-mono tracking-wider text-fuchsia-300">
+                    Origen del Embotellamiento
+                  </p>
+                  <div className="mt-2 grid grid-cols-3 gap-3">
+                    <div>
+                      <p className="text-[10px] font-mono text-gray-500">CABEZA DE FILA</p>
+                      <p className="text-lg font-bold font-mono text-red-400">
+                        #{visionStatus.queue_head_id}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-mono text-gray-500">EN COLA</p>
+                      <p className="text-lg font-bold font-mono text-orange-400">
+                        {visionStatus.queue_length ?? 0}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-mono text-gray-500">LONGITUD</p>
+                      <p className="text-lg font-bold font-mono text-gray-200">
+                        ~{Math.round(visionStatus.queue_length_px ?? 0)}px
+                      </p>
+                    </div>
+                  </div>
+                  {visionStatus.queue_members && visionStatus.queue_members.length > 0 && (
+                    <p className="mt-2 text-[10px] font-mono text-gray-400">
+                      IDs: {visionStatus.queue_members.map((id) => `#${id}`).join(", ")}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

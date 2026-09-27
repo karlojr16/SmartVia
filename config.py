@@ -39,6 +39,13 @@ CAMERAS = {
         "camera_id": "Cámara 4 · trafico3.mp4",
         "live": False,
     },
+    "cam5": {
+        "key": "cam5",
+        "label": "Cámara 5",
+        "source": str(BASE_DIR / "trafico_interseccion.mp4"),
+        "camera_id": "Cámara 5 · trafico_interseccion.mp4",
+        "live": False,
+    },
 }
 DEFAULT_CAMERA = "cam1"
 VIDEO_PATH = Path(CAMERAS[DEFAULT_CAMERA]["source"])
@@ -93,3 +100,26 @@ def open_failure_message(cam: dict) -> str:
         )
     name = Path(source).name if source else label
     return f"No se pudo abrir {name}. Coloca el video de {label} en la raiz del proyecto."
+
+
+# Filtro espacial (zonas de circulación, ver zones.py y /calibrate/<cam>).
+# Comportamiento cuando una cámara con filtro habilitado no tiene zonas
+# calibradas todavía:
+#   "all"  -> analizar todo el frame (compatible con el comportamiento previo)
+#   "none" -> no analizar ningún vehículo hasta calibrar
+ZONE_DEFAULT_MODE = "all"
+
+# El filtro espacial de zonas (calle vs. estacionamiento) y la detección de
+# cabeza de fila / cola solo corren para las cámaras en este set. cam3 (el
+# teléfono en vivo) queda fuera a propósito: es una cámara de mano que se
+# mueve, un polígono fijo no tendría sentido ahí. Agregar una cámara nueva
+# aquí basta para habilitarle ambas cosas (previa calibración en
+# /calibrate/<cam>) — no hay lógica adicional que duplicar. Una cámara fuera
+# de este set no tiene filtro espacial ni cola, y su clasificación
+# detenido/movimiento corre sobre el frame completo.
+CAMARAS_CON_FILTRO_ZONA = {"cam1", "cam2", "cam4", "cam5"}
+
+# Umbral de agrupamiento de cola: separación máxima (en % de la diagonal del
+# frame) entre dos vehículos detenidos consecutivos para considerarlos parte
+# de la misma fila continua.
+QUEUE_GAP_PERCENT = 6.0
